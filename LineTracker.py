@@ -4,7 +4,7 @@ from skimage.morphology import skeletonize
 
 
 
-def track_line(frame, blur=5, min_thinness=50):
+def track_line(frame, blur=5):
    
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
     if blur:
@@ -28,6 +28,7 @@ def track_line(frame, blur=5, min_thinness=50):
             biggest_line = c
             biggest_line_area = c_area
 
+    #Skeletonize to collapse into a single 1D image
     filled = cv2.drawContours(np.zeros_like(mask), [biggest_line], -1, 255, -1) & mask
     skel = skeletonize(filled > 0).astype(np.uint8) * 255
 

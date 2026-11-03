@@ -33,7 +33,7 @@ class MyRobot:
 
     PROTOCOL_VERSION = 1.0
     BAUDRATE = 1000000
-    DEVICENAME = "COM3"              # e.g., Windows: 'COM3' | Linux: '/dev/ttyUSB0' | Mac: '/dev/tty.usbserial-*'
+    DEVICENAME = "COM4"              # e.g., Windows: 'COM3' | Linux: '/dev/ttyUSB0' | Mac: '/dev/tty.usbserial-*'
 
     TORQUE_ENABLE = 1
     TORQUE_DISABLE = 0
@@ -215,6 +215,24 @@ class MyRobot:
    # Please input your forward and inverse kinematics here for position and pose conversion to joint angles.
    #  The output should be in the format of an array
 
+    def forward(self, joint_angles_deg):
+        #DH parameters
+        d__1 , a__1 , alpha__1 = 50, 0 , -np.pi / 2
+        d__2 , a__2 , alpha__2 = 0, 93 , 0
+        d__3 , a__3 , alpha__3 = 0, 93 , 0
+        d__4 , a__4 , alpha__4 = 0, 50 , 0
+
+        #Joint angles and map to radians 
+        theta__1,theta__2,theta__3,theta__4 = joint_angles_deg
+        theta__1,theta__2,theta__3,theta__4 = np.deg2rad([theta__1,theta__2,theta__3,theta__4])
+
+        t_01 = np.array([[np.cos(theta__1), -np.sin(theta__1)*np.cos(alpha__1), np.sin(theta__1)*np.sin(alpha__1), a__1*np.cos(theta__1)], [np.sin(theta__1), np.cos(theta__1)*np.cos(alpha__1), -np.cos(theta__1)*np.sin(alpha__1), a__1*np.sin(theta__1)], [0, np.sin(alpha__1), np.cos(alpha__1), d__1], [0, 0, 0, 1]])
+        t_12 = np.array([[np.cos(theta__2), -np.sin(theta__2)*np.cos(alpha__2), np.sin(theta__2)*np.sin(alpha__2), a__2*np.cos(theta__2)], [np.sin(theta__2), np.cos(theta__2)*np.cos(alpha__2), -np.cos(theta__2)*np.sin(alpha__2), a__2*np.sin(theta__2)], [0, np.sin(alpha__2), np.cos(alpha__2), d__2], [0, 0, 0, 1]])
+        t_23 = np.array([[np.cos(theta__3), -np.sin(theta__3)*np.cos(alpha__3), np.sin(theta__3)*np.sin(alpha__3), a__3*np.cos(theta__3)], [np.sin(theta__3), np.cos(theta__3)*np.cos(alpha__3), -np.cos(theta__3)*np.sin(alpha__3), a__3*np.sin(theta__3)], [0, np.sin(alpha__3), np.cos(alpha__3), d__3], [0, 0, 0, 1]])
+        t_34 = np.array([[np.cos(theta__4), -np.sin(theta__4)*np.cos(alpha__4), np.sin(theta__4)*np.sin(alpha__4), a__4*np.cos(theta__4)], [np.sin(theta__4), np.cos(theta__4)*np.cos(alpha__4), -np.cos(theta__4)*np.sin(alpha__4), a__4*np.sin(theta__4)], [0, np.sin(alpha__4), np.cos(alpha__4), d__4], [0, 0, 0, 1]])
+
+        return t_01@t_12@t_23@t_34
+
     # ------------------------------- Motion -----------------------------------
     def move_j(self, j1_deg, j2_deg, j3_deg, j4_deg, wait=True, tol_deg=2.0, poll_period=0.05):
         # Limits
@@ -250,6 +268,18 @@ class MyRobot:
             if np.all(np.abs(ja - desired) < tol_deg):
                 break
             time.sleep(poll_period)
+
+    def move_until_confirmed(self, instruction):
+        """Let the user jog the arm by typing joint angles until they press Enter. Returns the joint angles (deg)."""
+        print("\n" + instruction)
+        while True:
+            cmd = input("  Type 4 joint angles to move (e.g. '0 -45 -90 0'), or press Enter when in position: ").strip()
+            if not cmd:
+                return self.read_joint_angles()
+            try:
+                self.move_j(*[float(a) for a in cmd.split()])
+            except Exception as e:
+                print(f"  Could not move: {e}")
 
     #def move_c(self, x, y, z, pitch_deg, **kwargs):
      #   j_deg = self.inverse(x, y, z, math.radians(pitch_deg))
