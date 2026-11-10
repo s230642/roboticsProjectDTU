@@ -33,7 +33,7 @@ class MyRobot:
 
     PROTOCOL_VERSION = 1.0
     BAUDRATE = 1000000
-    DEVICENAME = "COM4"              # e.g., Windows: 'COM3' | Linux: '/dev/ttyUSB0' | Mac: '/dev/tty.usbserial-*'
+    DEVICENAME = "COM9"              # e.g., Windows: 'COM3' | Linux: '/dev/ttyUSB0' | Mac: '/dev/tty.usbserial-*'
 
     TORQUE_ENABLE = 1
     TORQUE_DISABLE = 0
@@ -91,7 +91,7 @@ class MyRobot:
             # Initialize defaults
             self.set_speed(self.motor_speed, overwrite_speeds=True)
             self.set_torque_limit(self.motor_torque)
-            self.move_j(0, 0, 0, 0)
+            #self.move_j(0, 0, 0, 0)
             self.enable_motors()
             self.init_status = 1
 
@@ -223,8 +223,9 @@ class MyRobot:
         d__4 , a__4 , alpha__4 = 0, 50 , 0
 
         #Joint angles and map to radians 
-        theta__1,theta__2,theta__3,theta__4 = joint_angles_deg
-        theta__1,theta__2,theta__3,theta__4 = np.deg2rad([theta__1,theta__2,theta__3,theta__4])
+        q1, q2, q3, q4  = joint_angles_deg
+        # The axis are flipped on the robot compared to denavit hartenbug
+        theta__1, theta__2, theta__3, theta__4 = np.deg2rad([q1, -q2 - 90, -q3, -q4])
 
         t_01 = np.array([[np.cos(theta__1), -np.sin(theta__1)*np.cos(alpha__1), np.sin(theta__1)*np.sin(alpha__1), a__1*np.cos(theta__1)], [np.sin(theta__1), np.cos(theta__1)*np.cos(alpha__1), -np.cos(theta__1)*np.sin(alpha__1), a__1*np.sin(theta__1)], [0, np.sin(alpha__1), np.cos(alpha__1), d__1], [0, 0, 0, 1]])
         t_12 = np.array([[np.cos(theta__2), -np.sin(theta__2)*np.cos(alpha__2), np.sin(theta__2)*np.sin(alpha__2), a__2*np.cos(theta__2)], [np.sin(theta__2), np.cos(theta__2)*np.cos(alpha__2), -np.cos(theta__2)*np.sin(alpha__2), a__2*np.sin(theta__2)], [0, np.sin(alpha__2), np.cos(alpha__2), d__2], [0, 0, 0, 1]])
@@ -336,26 +337,36 @@ class MyRobot:
 # Just comment out the code snippet, input desired joint angles in robot.move_j() and run.
 
 if __name__ == "__main__":
+    np.set_printoptions(suppress=True, precision=3)
     robot = MyRobot()
     if robot.init_status:
-        try:
-
             #Reading off position for calibration:
             joint_angles = robot.read_joint_angles()
-            print("Joint angles (deg):", joint_angles)
-
-
+            print("Initial joint angles (deg):", joint_angles)
+            print("Initial forward kinematic matrix:\n", robot.forward(joint_angles))
+            
+"""         ### Calibration example ###   
+            print("---")
+            robot.move_j(30, -44, -120, 0) #Degrees
+            time.sleep(5)
             # Example motions:
-            robot.move_j(-90, 0,-90, 0) #Degrees
+            print("Move to: 30, -44, -120, 0")
+            joint_angles = robot.read_joint_angles()
+            print("Joint angles (deg):", joint_angles)
+            print("Current forward kinematic matrix:\n", robot.forward(joint_angles))
 
-            robot.record_configuration()
+            print("---")
+            robot.move_j(0, -10, 0, -140) #Degrees
+            time.sleep(5)
+            # Example motions:
+            print("Move to: 0, -10, 0, -140")
+            joint_angles = robot.read_joint_angles()
+            print("Joint angles (deg):", joint_angles)
+            print("Current forward kinematic matrix:\n", robot.forward(joint_angles))
 
-            # Play it back
-            #robot.play_configuration_history()
+"""
 
-        finally:
-            pass
-            #robot.disable_motors()
+
 
 #Example 2:
 #Demonstrates how to move the robot joints into desired a list of joint positions [degrees]

@@ -1,5 +1,7 @@
 import json
 import os
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+
 import sys
 
 import cv2
@@ -9,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "MyRobot", "Python"))
 
-CAM_INDEX = 0
+CAM_INDEX = 1
 CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "camera_calibration.json")
 N_TABLE_TOUCHES = 3
 N_VIEWS = 6
@@ -105,6 +107,20 @@ def click_points(cam, n, instruction, allow_skip=False):
             return None
 
 
+def load_state(path=CALIB_FILE):
+    if os.path.exists(path):
+        with open(path) as fh:
+            return json.load(fh)
+    return {}
+
+
+def save_state(state, path=CALIB_FILE):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=2)
+    os.replace(tmp, path)
+
+
 def ask_float(prompt):
     while True:
         try:
@@ -128,60 +144,99 @@ def main():
         return
     cy, cx = frame.shape[0] / 2, frame.shape[1] / 2
 
+    state = load_state()
+    if state:
+        print(f"Resuming from {CALIB_FILE} (delete a key from it to redo that step).")
+    state["cx"], state["cy"] = cx, cy
+    save_state(state)
+
     try:
         print("\n=== Step 1/5: Table height ===")
-        zs = []
-        for i in range(N_TABLE_TOUCHES):
-            q = robot.move_until_confirmed(f"Move the arm so the pointer tip just touches the table "
-                                     f"(spot {i + 1} of {N_TABLE_TOUCHES}, spread the spots out).")
-            zs.append(robot.forward(q)[2, 3])
-        z_table = float(np.mean(zs))
-        print(f"  Table height: {z_table:.1f} mm (spread between spots: {np.ptp(zs):.1f} mm)")
-        if np.ptp(zs) > 5:
-            print("  Warning: large spread. The table may not be level, or the FK is inaccurate.")
+        if "z_table" in state:
+            print(f"  Already done: {state['z_table']:.1f} mm, skipping.")
+        else:
+            zs = []
+            for i in range(N_TABLE_TOUCHES):
+                q = robot.move_until_confirmed(f"Move the arm so the pointer tip just touches the table "
+                                         f"(spot {i + 1} of {N_TABLE_TOUCHES}, spread the spots out).")
+                zs.append(robot.forward(q)[2, 3])
+            state["z_table"] = float(np.mean(zs))
+            save_state(state)
+            print(f"  Table height: {state['z_table']:.1f} mm (spread between spots: {np.ptp(zs):.1f} mm)")
+            if np.ptp(zs) > 5:
+                print("  Warning: large spread. The table may not be level, or the FK is inaccurate.")
+        z_table = state["z_table"]
 
         print("\n=== Step 2/5: Focal length (rough estimate) ===")
-        robot.move_until_confirmed("Point the camera straight down, 15-30 cm above the table. "
-                             "Lay the ruler flat on the table through the middle of the image.")
-        z0 = ask_float("  With the ruler, measure the distance from the camera lens down to the table (mm): ")
-        marks = click_points(cam, 2, "Click two marks on the ruler that are far apart, both near the middle of the image.")
-        length = ask_float("  Real distance between the two marks you clicked (mm): ")
-        f0 = float(np.linalg.norm(marks[1] - marks[0]) * z0 / length)
-        print(f"  Focal length estimate: {f0:.0f} px")
+        if "f0" in state:
+            print(f"  Already done: {state['f0']:.0f} px, skipping.")
+        else:
+            robot.move_until_confirmed("Point the camera straight down, 15-30 cm above the table. "
+                                 "Lay the ruler flat on the table through the middle of the image.")
+            z0 = ask_float("  With the ruler, measure the distance from the camera lens down to the table (mm): ")
+            marks = click_points(cam, 2, "Click two marks on the ruler that are far apart, both near the middle of the image.")
+            length = ask_float("  Real distance between the two marks you clicked (mm): ")
+            state["f0"] = float(np.linalg.norm(marks[1] - marks[0]) * z0 / length)
+            save_state(state)
+            print(f"  Focal length estimate: {state['f0']:.0f} px")
+        f0 = state["f0"]
 
         print("\n=== Step 3/5: Reference dot ===")
-        print("Draw a small dark dot on the table (or use a sticker), roughly in the middle of the reachable area.")
-        q = robot.move_until_confirmed("Move the arm so the pointer tip touches the center of the dot.")
-        dot = robot.forward(q)[:3, 3]
-        print(f"  Dot position: {np.round(dot, 1)} mm")
+        if "dot" in state: 
+            print(f"  Already done: {np.round(state['dot'], 1)} mm, skipping.")
+        else:
+            print("Draw a small dark dot on the table (or use a sticker), roughly in the middle of the reachable area.")
+            q = robot.move_until_confirmed("Move the arm so the pointer tip touches the center of the dot.")
+            state["dot"] = robot.forward(q)[:3, 3].tolist()
+            # Views and the solution depend on the dot, so they are stale now.
+            for key in ("views", "f", "T_ee_cam"):
+                state.pop(key, None)
+            save_state(state)
+            print(f"  Dot position: {np.round(state['dot'], 1)} mm")
+        dot = np.array(state["dot"])
 
         print(f"\n=== Step 4/5: View the dot from {N_VIEWS} different poses ===")
-        print("The more the poses differ (height, tilt, base rotation, where the dot is in the image), the better.")
-        views = []
-        while len(views) < N_VIEWS:
-            hint = VIEW_HINTS[len(views) % len(VIEW_HINTS)]
-            q = robot.move_until_confirmed(f"View {len(views) + 1}/{N_VIEWS}: move the arm so the camera sees the dot, "
-                                     f"{hint}. The pointer must not cover the dot.")
-            pt = click_points(cam, 1, "Click the center of the dot (s = skip if it is not visible).", allow_skip=True)
-            if pt is not None:
-                views.append((robot.forward(q), pt[0]))
+        state.setdefault("views", [])
+        if len(state["views"]) >= N_VIEWS:
+            print(f"  Already done: {len(state['views'])} views, skipping.")
+        else:
+            if state["views"]:
+                print(f"  {len(state['views'])} view(s) already saved, continuing.")
+            print("The more the poses differ (height, tilt, base rotation, where the dot is in the image), the better.")
+            while len(state["views"]) < N_VIEWS:
+                n = len(state["views"])
+                hint = VIEW_HINTS[n % len(VIEW_HINTS)]
+                q = robot.move_until_confirmed(f"View {n + 1}/{N_VIEWS}: move the arm so the camera sees the dot, "
+                                         f"{hint}. The pointer must not cover the dot.")
+                pt = click_points(cam, 1, "Click the center of the dot (s = skip if it is not visible).", allow_skip=True)
+                if pt is not None:
+                    state["views"].append({"T_base_ee": robot.forward(q).tolist(), "uv": pt[0].tolist()})
+                    # A new view invalidates any previous solution.
+                    state.pop("f", None)
+                    state.pop("T_ee_cam", None)
+                    save_state(state)
+        views = [(np.array(v["T_base_ee"]), np.array(v["uv"])) for v in state["views"]]
 
         print("\n=== Step 5/5: Solving ===")
-        T_ee_cam, f, rms_px = solve_camera(views, dot, cx, cy, f0)
-        print(f"  Focal length: {f:.0f} px (ruler estimate was {f0:.0f} px)")
-        print(f"  Camera position relative to pointer tip: {np.round(T_ee_cam[:3, 3], 1)} mm")
-        print(f"  Camera axes in end-effector frame (columns x, y, z):\n{np.round(T_ee_cam[:3, :3], 3)}")
-        print(f"  Reprojection error: {rms_px:.1f} px RMS")
-        for i, (T_base_ee, uv) in enumerate(views):
-            p = pixels_to_table(uv, T_base_ee, T_ee_cam, f, cx, cy, z_table)
-            err = np.linalg.norm(p[0, :2] - dot[:2]) if len(p) else float("nan")
-            print(f"  View {i + 1}: dot found {err:.1f} mm from where the pointer touched it")
-        if rms_px > 10:
-            print("  Warning: large error. Check the FK, and that the dot did not move during calibration.")
-
-        with open(CALIB_FILE, "w") as fh:
-            json.dump({"f": f, "cx": cx, "cy": cy, "z_table": z_table, "T_ee_cam": T_ee_cam.tolist()}, fh, indent=2)
-        print(f"  Saved to {CALIB_FILE}")
+        if "f" in state and "T_ee_cam" in state:
+            print("  Already done, skipping.")
+            f, T_ee_cam = state["f"], np.array(state["T_ee_cam"])
+        else:
+            T_ee_cam, f, rms_px = solve_camera(views, dot, cx, cy, f0)
+            f = float(f)
+            state["f"], state["T_ee_cam"] = f, T_ee_cam.tolist()
+            save_state(state)
+            print(f"  Focal length: {f:.0f} px (ruler estimate was {f0:.0f} px)")
+            print(f"  Camera position relative to pointer tip: {np.round(T_ee_cam[:3, 3], 1)} mm")
+            print(f"  Camera axes in end-effector frame (columns x, y, z):\n{np.round(T_ee_cam[:3, :3], 3)}")
+            print(f"  Reprojection error: {rms_px:.1f} px RMS")
+            for i, (T_base_ee, uv) in enumerate(views):
+                p = pixels_to_table(uv, T_base_ee, T_ee_cam, f, cx, cy, z_table)
+                err = np.linalg.norm(p[0, :2] - dot[:2]) if len(p) else float("nan")
+                print(f"  View {i + 1}: dot found {err:.1f} mm from where the pointer touched it")
+            if rms_px > 10:
+                print("  Warning: large error. Check the FK, and that the dot did not move during calibration.")
+            print(f"  Saved to {CALIB_FILE}")
 
         print("\n=== Optional: Check on new poses ===")
         while True:
