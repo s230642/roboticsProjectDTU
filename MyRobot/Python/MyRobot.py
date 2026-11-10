@@ -234,6 +234,35 @@ class MyRobot:
 
         return t_01@t_12@t_23@t_34
 
+    def inverse(self, x, y, z, pitch, elbow_up=True):
+        """
+        Joint angles (deg, servo convention) that put the pointer tip at (x, y, z) mm in the base frame.
+
+        pitch: angle of the pointer below horizontal in radians (pi/2 = pointing straight down).
+        Raises ValueError if the point cannot be reached with that pitch.
+        """
+        d__1, a__2, a__3, a__4 = 50, 93, 93, 50
+
+        theta__1 = np.arctan2(y, x)
+
+        # Wrist position in the arm's vertical plane: u outward from the base axis, w downward from the shoulder
+        u = np.hypot(x, y) - a__4 * np.cos(pitch)
+        w = (d__1 - z) - a__4 * np.sin(pitch)
+
+        c3 = (u**2 + w**2 - a__2**2 - a__3**2) / (2 * a__2 * a__3)
+        if abs(c3) > 1:
+            raise ValueError(f"Point ({x:.1f}, {y:.1f}, {z:.1f}) is out of reach with pitch {np.degrees(pitch):.1f} deg")
+
+        # Positive DH angles bend downward, so elbow up means theta3 > 0
+        theta__3 = np.arccos(c3) if elbow_up else -np.arccos(c3)
+        theta__2 = np.arctan2(w, u) - np.arctan2(a__3 * np.sin(theta__3), a__2 + a__3 * np.cos(theta__3))
+        theta__4 = pitch - theta__2 - theta__3
+
+        # Back from DH angles to the robot's servo convention (inverse of the mapping in forward)
+        t1, t2, t3, t4 = np.degrees([theta__1, theta__2, theta__3, theta__4])
+        q = np.array([t1, -t2 - 90, -t3, -t4])
+        return (q + 180) % 360 - 180
+
     # ------------------------------- Motion -----------------------------------
     def move_j(self, j1_deg, j2_deg, j3_deg, j4_deg, wait=True, tol_deg=2.0, poll_period=0.05):
         # Limits
@@ -282,13 +311,13 @@ class MyRobot:
             except Exception as e:
                 print(f"  Could not move: {e}")
 
-    #def move_c(self, x, y, z, pitch_deg, **kwargs):
-     #   j_deg = self.inverse(x, y, z, math.radians(pitch_deg))
-      #  self.move_j(j_deg[0], j_deg[1], j_deg[2], j_deg[3], **kwargs)
+    def move_c(self, x, y, z, pitch_deg, **kwargs):
+        j_deg = self.inverse(x, y, z, math.radians(pitch_deg))
+        self.move_j(j_deg[0], j_deg[1], j_deg[2], j_deg[3], **kwargs)
 
-    #def read_ee_position(self):
-     #   j_a = self.read_joint_angles()
-      #  return self.forward(j_a)
+    def read_ee_position(self):
+        j_a = self.read_joint_angles()
+        return self.forward(j_a)
 
     # --------------------------- History / Macros ------------------------------
     def record_configuration(self):
@@ -344,6 +373,10 @@ if __name__ == "__main__":
             joint_angles = robot.read_joint_angles()
             print("Initial joint angles (deg):", joint_angles)
             print("Initial forward kinematic matrix:\n", robot.forward(joint_angles))
+
+            robot.move_c(147.1, -8.4, -42.2, 90)       # pointer tip to (x, y, z) mm, pointing straight down
+            q = robot.inverse(147.1, -8.4, -42.2, np.pi/2)   # just get the joint angles (servo convention, deg)
+            print(q)
             
 """         ### Calibration example ###   
             print("---")
