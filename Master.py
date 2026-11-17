@@ -12,9 +12,10 @@ from LineTracker import track_line
 from TransformTo3D import skeleton_to_world
 
 VIEW_POSE = [0, -4, -87, -88]  # joint angles (deg) where the camera looks down at the line
-TARGET_HEIGHT_MM = 20.0        # height above the table to trace the line at (0 = touching)
+TARGET_HEIGHT_MM = 15.0        # height above the table to trace the line at (0 = touching)
 POINT_SPACING_MM = 5.0         # distance between points along the line
 HOVER_MM = 30.0                # height above the line to approach from and lift to
+SPEED_MM_S = 25.0              # speed of the fingertip along the line
 COMPLIANCE_SLOPES = [32, 32, 32, 32]  # per joint, lower = pushes harder near the target (default 32); joint 2 carries the arm
 
 robot = MyRobot()
@@ -45,7 +46,7 @@ cv2.destroyAllWindows()
 if len(points) == 0:
     print("No line found")
 elif input(f"Follow the line ({len(points)} points)? [y/N]: ").strip().lower() == "y":
-    robot.follow_path(points, hover_mm=HOVER_MM)
+    robot.follow_path(points, hover_mm=HOVER_MM, speed_mm_s=SPEED_MM_S)
 
 cv2.waitKey(1500)
 robot.move_j(*VIEW_POSE)

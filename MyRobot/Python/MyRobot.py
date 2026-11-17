@@ -364,14 +364,28 @@ class MyRobot:
                 return pitch, qs
         return None
 
-    def follow_path(self, points, hover_mm=20):
-        """Lower onto the first point, move through all points with one pitch, then lift."""
+    def follow_path(self, points, hover_mm=20, speed_mm_s=20):
+        """Lower onto the first point, move continuously through all points with one pitch, then lift."""
         lift = np.array([0, 0, hover_mm])
         solution = self.find_pitch(np.vstack([points[0] + lift, points, points[-1] + lift]))
         if solution is None:
             raise ValueError("No single pitch reaches the whole path")
-        for q in solution[1]:
-            self.move_j(*q)
+        qs = solution[1]
+        self.move_j(*qs[0])
+        self.move_j(*qs[1])
+
+        # Along the line: give each joint the speed that makes all joints reach the next point together,
+        # and send the next point when its time is up instead of stopping at every point
+        max_deg_s = 1023 * 0.111 * 6  # AX-12A: speed value 1023 = 114 rpm
+        for i in range(2, len(qs) - 1):
+            duration = np.linalg.norm(points[i - 1] - points[i - 2]) / speed_mm_s
+            self.set_speed(np.clip(np.abs(qs[i] - qs[i - 1]) / duration / max_deg_s, 1 / 1023, 1), overwrite_speeds=False)
+            self.move_j(*qs[i], wait=False)
+            time.sleep(duration)
+
+        self.set_speed(self.motor_speed)
+        self.move_j(*qs[-2])
+        self.move_j(*qs[-1])
 
     # --------------------------- History / Macros ------------------------------
     def record_configuration(self):
