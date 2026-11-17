@@ -319,6 +319,27 @@ class MyRobot:
         j_a = self.read_joint_angles()
         return self.forward(j_a)
 
+    def find_pitch(self, points, pitches_deg=(90, 100, 80, 110, 70, 120, 60)):
+        """Return (pitch_deg, joint angles per point) for the first pitch that reaches all points, or None."""
+        lo, hi = self.joint_limits[:, 0], self.joint_limits[:, 1]
+        for pitch in pitches_deg:
+            try:
+                qs = np.array([self.inverse(*p, math.radians(pitch)) for p in points])
+            except ValueError:
+                continue
+            if np.all((lo <= qs) & (qs <= hi)):
+                return pitch, qs
+        return None
+
+    def follow_path(self, points, hover_mm=20):
+        """Lower onto the first point, move through all points with one pitch, then lift."""
+        lift = np.array([0, 0, hover_mm])
+        solution = self.find_pitch(np.vstack([points[0] + lift, points, points[-1] + lift]))
+        if solution is None:
+            raise ValueError("No single pitch reaches the whole path")
+        for q in solution[1]:
+            self.move_j(*q)
+
     # --------------------------- History / Macros ------------------------------
     def record_configuration(self):
         entry = {
@@ -374,7 +395,7 @@ if __name__ == "__main__":
             print("Initial joint angles (deg):", joint_angles)
             print("Initial forward kinematic matrix:\n", robot.forward(joint_angles))
 
-            robot.move_c(147.1, -8.4, -42.2, 90)       # pointer tip to (x, y, z) mm, pointing straight down
+            robot.move_j(-0.7, -79.5, -37.4, -43.1)       # pointer tip to (x, y, z) mm, pointing straight down
             q = robot.inverse(147.1, -8.4, -42.2, np.pi/2)   # just get the joint angles (servo convention, deg)
             print(q)
             

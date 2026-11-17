@@ -28,6 +28,9 @@ def track_line(frame, blur=5):
             biggest_line = c
             biggest_line_area = c_area
 
+    if biggest_line is None:
+        return np.zeros_like(mask)
+
     #Skeletonize to collapse into a single 1D image
     filled = cv2.drawContours(np.zeros_like(mask), [biggest_line], -1, 255, -1) & mask
     skel = skeletonize(filled > 0).astype(np.uint8) * 255
