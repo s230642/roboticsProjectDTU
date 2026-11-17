@@ -26,6 +26,8 @@ def sind(x_deg):  # sin with degrees
 class MyRobot:
     # ----------------------------- Constants (AX-12A) -------------------------
     ADDR_MX_TORQUE_ENABLE = 24       # 1 byte
+    ADDR_MX_CW_COMPLIANCE_SLOPE = 28   # 1 byte
+    ADDR_MX_CCW_COMPLIANCE_SLOPE = 29  # 1 byte
     ADDR_MX_GOAL_POSITION = 30       # 2 bytes
     ADDR_MX_MOVING_SPEED = 32        # 2 bytes
     ADDR_MX_TORQUE_LIMIT = 34        # 2 bytes
@@ -33,7 +35,7 @@ class MyRobot:
 
     PROTOCOL_VERSION = 1.0
     BAUDRATE = 1000000
-    DEVICENAME = "COM9"              # e.g., Windows: 'COM3' | Linux: '/dev/ttyUSB0' | Mac: '/dev/tty.usbserial-*'
+    DEVICENAME = "COM10"              # e.g., Windows: 'COM3' | Linux: '/dev/ttyUSB0' | Mac: '/dev/tty.usbserial-*'
 
     TORQUE_ENABLE = 1
     TORQUE_DISABLE = 0
@@ -41,6 +43,8 @@ class MyRobot:
     DXL_MOVING_STATUS_THRESHOLD = 10  # [ticks], not used directly here
     TICKS_PER_DEG = 1.0 / 0.29        # ≈ 3.448275862 ticks per degree
     DEG_PER_TICK = 0.29
+    FINGER_LENGTH = 80.0             # fingertip distance along the last link from the joint 4 axis (mm)
+    FINGER_OFFSET = 14.0             # fingertip offset above the last link, in the arm's plane (mm)
 
     # ------------------------------- Init -------------------------------------
     def __init__(self):
@@ -61,7 +65,7 @@ class MyRobot:
         self.ik_weights = np.array([0.25, 0.25, 0.25, 1, 1, 1])
 
         # Motor offsets (deg)
-        self.joint_offsets = np.array([150, 150, 150, 150], dtype=float)
+        self.joint_offsets = np.array([150, 150, 145, 150], dtype=float)
 
         self.joint_angle_error = np.array([0.0, 0.0, 0.0, 0.0])
         self.init_status = 0
@@ -179,6 +183,12 @@ class MyRobot:
             else:
                 print("Torque limit out of range, enter value between (0, 1].")
 
+    def set_compliance_slope(self, slopes):
+        """How gently each servo pushes near its goal (default 32). Lower = stiffer: 2, 4, 8, 16, 32, 64 or 128."""
+        for dxl_id, slope in zip(self.motor_ids, slopes):
+            self._write1(dxl_id, self.ADDR_MX_CW_COMPLIANCE_SLOPE, slope)
+            self._write1(dxl_id, self.ADDR_MX_CCW_COMPLIANCE_SLOPE, slope)
+
     # --------------------------------- Power ----------------------------------
     def enable_motors(self):
         for dxl_id in self.motor_ids:
@@ -220,7 +230,7 @@ class MyRobot:
         d__1 , a__1 , alpha__1 = 50, 0 , -np.pi / 2
         d__2 , a__2 , alpha__2 = 0, 93 , 0
         d__3 , a__3 , alpha__3 = 0, 93 , 0
-        d__4 , a__4 , alpha__4 = 0, 50 , 0
+        d__4 , a__4 , alpha__4 = 0, self.FINGER_LENGTH , 0
 
         #Joint angles and map to radians 
         q1, q2, q3, q4  = joint_angles_deg
@@ -232,7 +242,11 @@ class MyRobot:
         t_23 = np.array([[np.cos(theta__3), -np.sin(theta__3)*np.cos(alpha__3), np.sin(theta__3)*np.sin(alpha__3), a__3*np.cos(theta__3)], [np.sin(theta__3), np.cos(theta__3)*np.cos(alpha__3), -np.cos(theta__3)*np.sin(alpha__3), a__3*np.sin(theta__3)], [0, np.sin(alpha__3), np.cos(alpha__3), d__3], [0, 0, 0, 1]])
         t_34 = np.array([[np.cos(theta__4), -np.sin(theta__4)*np.cos(alpha__4), np.sin(theta__4)*np.sin(alpha__4), a__4*np.cos(theta__4)], [np.sin(theta__4), np.cos(theta__4)*np.cos(alpha__4), -np.cos(theta__4)*np.sin(alpha__4), a__4*np.sin(theta__4)], [0, np.sin(alpha__4), np.cos(alpha__4), d__4], [0, 0, 0, 1]])
 
-        return t_01@t_12@t_23@t_34
+        # Fingertip sits FINGER_OFFSET above the link line (DH y4 points below the link)
+        t_tip = np.eye(4)
+        t_tip[1, 3] = -self.FINGER_OFFSET
+
+        return t_01@t_12@t_23@t_34@t_tip
 
     def inverse(self, x, y, z, pitch, elbow_up=True):
         """
@@ -241,13 +255,13 @@ class MyRobot:
         pitch: angle of the pointer below horizontal in radians (pi/2 = pointing straight down).
         Raises ValueError if the point cannot be reached with that pitch.
         """
-        d__1, a__2, a__3, a__4 = 50, 93, 93, 50
+        d__1, a__2, a__3, a__4, h = 50, 93, 93, self.FINGER_LENGTH, self.FINGER_OFFSET
 
         theta__1 = np.arctan2(y, x)
 
         # Wrist position in the arm's vertical plane: u outward from the base axis, w downward from the shoulder
-        u = np.hypot(x, y) - a__4 * np.cos(pitch)
-        w = (d__1 - z) - a__4 * np.sin(pitch)
+        u = np.hypot(x, y) - a__4 * np.cos(pitch) - h * np.sin(pitch)
+        w = (d__1 - z) - a__4 * np.sin(pitch) + h * np.cos(pitch)
 
         c3 = (u**2 + w**2 - a__2**2 - a__3**2) / (2 * a__2 * a__3)
         if abs(c3) > 1:
@@ -264,7 +278,13 @@ class MyRobot:
         return (q + 180) % 360 - 180
 
     # ------------------------------- Motion -----------------------------------
-    def move_j(self, j1_deg, j2_deg, j3_deg, j4_deg, wait=True, tol_deg=2.0, poll_period=0.05):
+    def _write_goal(self, joint_deg):
+        cmd_deg = joint_deg + self.joint_offsets
+        for i, dxl_id in enumerate(self.motor_ids):
+            self._write2(dxl_id, self.ADDR_MX_GOAL_POSITION, self.deg_to_ticks(cmd_deg[i]))
+
+    def move_j(self, j1_deg, j2_deg, j3_deg, j4_deg, wait=True, tol_deg=2.0, poll_period=0.05, timeout_s=10.0,
+               settle_s=0.3, max_push_deg=5.0):
         # Limits
         desired = np.array([j1_deg, j2_deg, j3_deg, j4_deg], dtype=float)
         for i in range(4):
@@ -278,26 +298,39 @@ class MyRobot:
         #self.joint_angles = desired.copy()
         #self.forward(desired)
 
-        # Apply motor offsets for command
-        cmd_deg = desired + self.joint_offsets
-        for i, dxl_id in enumerate(self.motor_ids):
-            self._write2(dxl_id, self.ADDR_MX_GOAL_POSITION, self.deg_to_ticks(cmd_deg[i]))
+        goal = desired.copy()
+        self._write_goal(goal)
 
         if not wait:
             return
 
 
-        # Wait until all joints within tolerance
-        while True:
+        # Wait until all joints within tolerance, but give up loudly after timeout_s
+        deadline = time.time() + timeout_s
+        ja, prev, still_since, last_error = None, None, time.time(), None
+        while time.time() < deadline:
             try:
                 ja = self.read_joint_angles()
-            except Exception:
+            except Exception as e:
                 # If read fails transiently, just try again shortly.
+                last_error = e
                 time.sleep(poll_period)
                 continue
             if np.all(np.abs(ja - desired) < tol_deg):
-                break
+                return
+            # Stopped short of the target (e.g. sagging under gravity): move the goal past it by the remaining error
+            if prev is None or np.any(np.abs(ja - prev) > 0.3):
+                still_since = time.time()
+            elif time.time() - still_since > settle_s:
+                goal = np.clip(goal + desired - ja, desired - max_push_deg, desired + max_push_deg)
+                self._write_goal(goal)
+                still_since = time.time()
+            prev = ja
             time.sleep(poll_period)
+        if ja is None:
+            raise TimeoutError(f"move_j: could not read joint angles for {timeout_s} s (last error: {last_error})")
+        raise TimeoutError(f"move_j: joints did not reach target within {timeout_s} s. "
+                           f"Target {np.round(desired, 1)}, reached {np.round(ja, 1)}, error {np.round(ja - desired, 1)} deg")
 
     def move_until_confirmed(self, instruction):
         """Let the user jog the arm by typing joint angles until they press Enter. Returns the joint angles (deg)."""
@@ -394,117 +427,8 @@ if __name__ == "__main__":
             joint_angles = robot.read_joint_angles()
             print("Initial joint angles (deg):", joint_angles)
             print("Initial forward kinematic matrix:\n", robot.forward(joint_angles))
-
-            robot.move_j(-0.7, -79.5, -37.4, -43.1)       # pointer tip to (x, y, z) mm, pointing straight down
-            q = robot.inverse(147.1, -8.4, -42.2, np.pi/2)   # just get the joint angles (servo convention, deg)
-            print(q)
-            
-"""         ### Calibration example ###   
-            print("---")
-            robot.move_j(30, -44, -120, 0) #Degrees
-            time.sleep(5)
-            # Example motions:
-            print("Move to: 30, -44, -120, 0")
-            joint_angles = robot.read_joint_angles()
-            print("Joint angles (deg):", joint_angles)
-            print("Current forward kinematic matrix:\n", robot.forward(joint_angles))
-
-            print("---")
-            robot.move_j(0, -10, 0, -140) #Degrees
-            time.sleep(5)
-            # Example motions:
-            print("Move to: 0, -10, 0, -140")
-            joint_angles = robot.read_joint_angles()
-            print("Joint angles (deg):", joint_angles)
-            print("Current forward kinematic matrix:\n", robot.forward(joint_angles))
-
-"""
-
-
-
-#Example 2:
-#Demonstrates how to move the robot joints into desired a list of joint positions [degrees]
-#You might need to adjust the offsets in the code above to make the zero point suit your needs.
-#Just comment out the code snippet, input desired joint angle sequence in robot.move_j() and run.
-"""
-if __name__ == "__main__":
-    import time
-    import numpy as np
-
-    # Create robot instance
-    robot = MyRobot()
-
-    if robot.init_status:
-        try:
-            # ----------------- Define the sequence of joint angles -----------------
-            # Each row = [J1, J2, J3, J4] in DEGREES
-            # Adjust these based on your mechanical limits / workspace
-            joint_sequence = np.array([
-                [-12.02, -7.99, -95.76, 13.75],
-                [-11.75, -7.21, -93.14, 10.35],
-                [-11.24, -6.60, -90.47, 7.07],
-                [-10.49, -6.14, -87.85, 3.99],
-                [-9.33, -5.47, -85.76, 1.24],
-                [-7.69, -5.20, -83.63, -1.17],
-                [-5.96, -5.05, -81.82, -3.13],
-                [-4.25, -4.67, -80.78, -4.55],
-                [-2.04, -4.61, -79.95, -5.44],
-                [-0.00, -4.60, -79.66, -5.74],
-                [2.04, -4.61, -79.95, -5.44],
-                [4.25, -4.67, -80.78, -4.55],
-                [5.96, -5.05, -81.82, -3.13],
-                [7.69, -5.20, -83.63, -1.17],
-                [9.33, -5.47, -85.76, 1.24],
-                [10.49, -6.14, -87.85, 3.99],
-                [11.24, -6.60, -90.47, 7.07],
-                [11.75, -7.21, -93.14, 10.35],
-                [12.02, -7.99, -95.76, 13.75],
-                [11.75, -8.85, -98.32, 17.17],
-                [11.24, -9.82, -100.68, 20.50],
-                [10.49, -10.87, -102.80, 23.67],
-                [9.33, -11.60, -105.02, 26.62],
-                [7.69, -12.54, -106.61, 29.14],
-                [5.96, -13.37, -107.84, 31.21],
-                [4.25, -13.76, -109.06, 32.82],
-                [2.04, -14.16, -109.60, 33.76],
-                [-0.00, -14.30, -109.78, 34.08],
-                [-2.04, -14.16, -109.60, 33.76],
-                [-4.25, -13.76, -109.06, 32.82],
-                [-5.96, -13.37, -107.84, 31.21],
-                [-7.69, -12.54, -106.61, 29.14],
-                [-9.33, -11.60, -105.02, 26.62],
-                [-10.49, -10.87, -102.80, 23.67],
-                [-11.24, -9.82, -100.68, 20.50],
-                [-11.75, -8.85, -98.32, 17.17],
-                [-12.02, -7.99, -95.76, 13.75]
-                # return home
-            ])
-
-            # ----------------- Run the motion sequence -----------------
-            robot.enable_motors()
-            print("\nStarting joint sequence...")
-            time.sleep(1.0)
-
-            #Number of loops
-            loops = 5
-
-            for loop in range(loops):
-                print(f"\n🔁 Loop {loop + 1} of {loops} ----------------------------")
-                for idx, pose in enumerate(joint_sequence):
-                    print(f"\n➡️  Moving to pose {idx+1}: {pose}°")
-                    robot.move_j(*pose)
-                    robot.record_configuration()  # save to history
-                    # Read and print measured joint positions
-                    measured = robot.read_joint_angles()
-                    print("Measured (deg):", np.round(measured, 2))
-                    time.sleep(0)  # pause between poses
-
-
-
-        except Exception as e:
-            print("Error during sequence:", e)
-
-        finally:
-            robot.disable_motors()
-            print("\nMotors disabled. Program finished.")
-"""
+            #robot.move_j(0, 0, 0, 0)
+            #robot.move_j(-0.7, -79.5, -37.4, -43.1)       # pointer tip to (x, y, z) mm, pointing straight down
+            #q = robot.inverse(147.1, -8.4, -42.2, np.pi/2)   # just get the joint angles (servo convention, deg)
+            #print(q)
+ 

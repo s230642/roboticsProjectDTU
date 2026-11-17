@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "MyRobot", "Python"))
 
-CAM_INDEX = 1
+CAM_INDEX = 0
 CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "camera_calibration.json")
 N_TABLE_TOUCHES = 3
 N_VIEWS = 6
@@ -53,23 +53,24 @@ def _make_T(rotvec, t):
     return T
 
 
-def _residuals(params, views, dot, cx, cy, f0):
+def _residuals(params, views, dot, cx, cy, f0, f_weight):
     T_ee_cam, f = _make_T(params[:3], params[3:6]), params[6]
     res = []
     for T_base_ee, (u, v) in views:
         x, y, z = (np.linalg.inv(T_base_ee @ T_ee_cam) @ np.append(dot, 1))[:3]
         z = max(z, 1e-3)
         res += [f * x / z + cx - u, f * y / z + cy - v]
-    res.append(0.1 * (f - f0))
+    res.append(f_weight * (f - f0))
     return res
 
 
-def solve_camera(views, dot, cx, cy, f0):
-    """Fit T_ee_cam and f so the dot projects onto the clicked pixel in every view."""
+def solve_camera(views, dot, cx, cy, f0, f_weight=0.1):
+    """Fit T_ee_cam and f so the dot projects onto the clicked pixel in every view.
+    f_weight: how strongly f is held at the ruler estimate f0 (0.1 = gently, 100 = effectively fixed)."""
     best = None
     for start in Rotation.create_group("O"):
         x0 = np.concatenate([start.as_rotvec(), np.zeros(3), [f0]])
-        sol = least_squares(_residuals, x0, args=(views, dot, cx, cy, f0), x_scale="jac")
+        sol = least_squares(_residuals, x0, args=(views, dot, cx, cy, f0, f_weight), x_scale="jac")
         if best is None or sol.cost < best.cost:
             best = sol
     T_ee_cam, f = _make_T(best.x[:3], best.x[3:6]), best.x[6]

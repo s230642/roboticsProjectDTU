@@ -14,8 +14,6 @@ T_EE_CAM = np.array([[0, 1, 0, 0],   # camera pose relative to the pointer tip (
                      [0, 0, 1, 0],
                      [1, 0, 0, 0],
                      [0, 0, 0, 1]], dtype=float)
-POINT_SPACING_MM = 5.0           # distance between output points along the line
-TARGET_HEIGHT_MM = 0.0           # height above the table to place the output points (0 = touching)
 
 if os.path.exists(CALIB_FILE):
     FOCAL_LENGTH_PX, CX, CY, Z_TABLE, T_EE_CAM = load_calibration()
@@ -68,12 +66,14 @@ def default_camera_pose(height=CAMERA_HEIGHT):
 
 
 def skeleton_to_world(skeleton, T_base_ee=None, f=None, cx=None, cy=None, z_table=None,
-                      T_ee_cam=None, spacing=POINT_SPACING_MM, target_height=TARGET_HEIGHT_MM):
+                      T_ee_cam=None, spacing=5.0, target_height=0.0):
     """
     Convert a skeleton image from track_line into ordered 3D points in the robot base frame (mm).
 
     T_base_ee: 4x4 pointer-tip pose from forward kinematics when the image was taken.
                If None, the camera is assumed straight down CAMERA_HEIGHT above the table.
+    spacing: distance between output points along the line (mm).
+    target_height: height above the table to place the points (mm, 0 = touching).
     Returns an Nx3 array, ordered along the line starting at the end closest to the pointer tip.
     """
     f = FOCAL_LENGTH_PX if f is None else f
